@@ -18,11 +18,18 @@ def index():
                            days_streak=days_streak)
 
 from app.forms import LinkForm, EditProfileForm
-from flask import flash, redirect, url_for, request
-from app.models import Link, Click, Subscription, Plan
+from flask import flash, redirect, url_for, request, current_app, abort
+from app.models import Link, Click, Subscription, Plan, Payment
 from app import db, csrf
 from datetime import datetime, timedelta
-
+import hmac
+import hashlib
+import json
+from werkzeug.utils import secure_filename
+import os
+import secrets
+from paystackapi.customer import Customer
+from paystackapi.transaction import Transaction
 
 
 @bp.route('/<username>')
@@ -98,56 +105,44 @@ def edit_profile():
         form.theme.data = current_user.selected_theme
     return render_template('edit_profile.html', title='Edit Profile', form=form)
 
-from paystackapi.customer import Customer
-from paystackapi.transaction import Transaction
-from paystackapi.subscription import Subscription as PaystackSubscription
-from flask import current_app, abort, request
-import hmac
-import hashlib
-import json
-from werkzeug.utils import secure_filename
-import os
-
 @bp.route('/pricing')
 @login_required
 def pricing():
     plans = Plan.query.order_by(Plan.price).all()
     return render_template('pricing.html', title='Pricing', plans=plans)
 
+import secrets
+
 @bp.route('/subscribe/<int:plan_id>')
 @login_required
 def subscribe(plan_id):
     plan = Plan.query.get_or_404(plan_id)
 
-    if current_user.paystack_customer_code:
-        customer_code = current_user.paystack_customer_code
-    else:
-        # Create a new customer on Paystack
-        customer = Customer.create(
-            email=current_user.email,
-            first_name=current_user.username,
-        )
-        if customer['status']:
-            customer_code = customer['data']['customer_code']
-            current_user.paystack_customer_code = customer_code
-            db.session.commit()
-        else:
-            flash('Could not create a customer account. Please try again.')
-            return redirect(url_for('main.pricing'))
+    # Create a new Payment record
+    reference = f"user_{current_user.id}_{secrets.token_hex(8)}"
+    payment = Payment(
+        user_id=current_user.id,
+        plan_id=plan.id,
+        amount=plan.price,
+        reference=reference,
+        status='pending'
+    )
+    db.session.add(payment)
+    db.session.commit()
 
-    # Create a subscription
+    # Initialize a one-time transaction with Paystack
     transaction = Transaction.initialize(
         email=current_user.email,
-        amount=plan.price,
-        plan=plan.paystack_plan_code,
+        amount=plan.price,  # Amount is in Kobo
+        reference=reference,
         callback_url=url_for('main.dashboard', _external=True),
-        channels=['card', 'bank', 'ussd', 'qr']
+        metadata={'user_id': current_user.id, 'plan_id': plan.id}
     )
 
     if transaction['status']:
         return redirect(transaction['data']['authorization_url'])
     else:
-        flash('Could not start subscription. Please try again.')
+        flash('Could not initiate payment. Please try again.')
         return redirect(url_for('main.pricing'))
 
 @bp.route('/paystack-webhook', methods=['POST'])
@@ -156,7 +151,11 @@ def paystack_webhook():
     # Verify the event by checking the signature
     signature = request.headers.get('x-paystack-signature')
     payload = request.get_data()
-    secret_key = current_app.config['PAYSTACK_SECRET_KEY']
+    secret_key = current_app.config.get('PAYSTACK_SECRET_KEY')
+
+    if not secret_key:
+        # It's good practice to log this error
+        abort(500)
 
     hashed_payload = hmac.new(secret_key.encode('utf-8'), payload, hashlib.sha512).hexdigest()
     if signature != hashed_payload:
@@ -165,33 +164,31 @@ def paystack_webhook():
     # Process the event
     event = json.loads(payload)
     if event['event'] == 'charge.success':
-        customer_email = event['data']['customer']['email']
-        plan_code = event['data'].get('plan', {}).get('plan_code')
+        reference = event['data']['reference']
+        payment = Payment.query.filter_by(reference=reference).first()
 
-        user = User.query.filter_by(email=customer_email).first()
-        plan = Plan.query.filter_by(paystack_plan_code=plan_code).first()
+        if payment and payment.status == 'pending':
+            payment.status = 'success'
 
-        if user and plan:
-            # Get subscription details from payload
-            subscription_code = event['data'].get('subscription', {}).get('subscription_code')
+            user = payment.user
+            plan = payment.plan
 
-            # Check for an existing active subscription to this plan
-            subscription = Subscription.query.filter_by(user_id=user.id, plan_id=plan.id, status='active').first()
+            # Find existing active subscription
+            subscription = Subscription.query.filter_by(user_id=user.id, status='active').first()
 
             if subscription and subscription.end_date > datetime.utcnow():
-                # If user has an active subscription, extend it
+                # If user has an active subscription, extend it by 30 days
                 subscription.end_date = subscription.end_date + timedelta(days=30)
             else:
                 # If subscription is expired or doesn't exist, create a new one
-                if subscription: # In case it was expired
+                if subscription: # The subscription was expired, so we reactivate
                     subscription.status = 'active'
                     subscription.start_date = datetime.utcnow()
                     subscription.end_date = datetime.utcnow() + timedelta(days=30)
-                else:
+                else: # No subscription existed before
                     subscription = Subscription(
                         user_id=user.id,
                         plan_id=plan.id,
-                        paystack_subscription_code=subscription_code,
                         status='active',
                         start_date=datetime.utcnow(),
                         end_date=datetime.utcnow() + timedelta(days=30)
@@ -216,19 +213,8 @@ def delete_link(link_id):
 @bp.route('/cancel_subscription', methods=['POST'])
 @login_required
 def cancel_subscription():
-    sub = current_user.subscriptions.filter_by(status='active').order_by(Subscription.end_date.desc()).first()
+    sub = current_user.active_subscription
     if sub:
-        # In a real app, you would call the Paystack API here to disable the subscription.
-        # For example:
-        # response = PaystackSubscription.disable(code=sub.paystack_subscription_code, token='<email_token_from_paystack>')
-        # if response['status']:
-        #     sub.status = 'cancelled'
-        #     db.session.commit()
-        #     flash('Your subscription has been cancelled and will not renew.')
-        # else:
-        #     flash('Could not cancel subscription with payment provider. Please contact support.')
-
-        # For this project, we'll just update our local status.
         sub.status = 'cancelled'
         db.session.commit()
         flash('Your subscription has been cancelled. You will retain premium access until the end of your current billing period.')

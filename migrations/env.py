@@ -78,6 +78,7 @@ def run_migrations_online():
             connection=connection,
             target_metadata=target_metadata,
             process_revision_directives=process_revision_directives,
+            render_as_batch=True,  # Add this line for SQLite support
             **current_app.extensions['migrate'].configure_args
         )
 

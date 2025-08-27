@@ -6,5 +6,4 @@ class PlanForm(FlaskForm):
     name = StringField('Plan Name', validators=[DataRequired()])
     price = IntegerField('Price (in Kobo)', validators=[DataRequired(), NumberRange(min=0)])
     features = TextAreaField('Features (one per line)', validators=[DataRequired()])
-    paystack_plan_code = StringField('Paystack Plan Code', validators=[DataRequired()])
     submit = SubmitField('Save Plan')
