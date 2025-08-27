@@ -53,8 +53,7 @@ def create_plan():
     if form.validate_on_submit():
         plan = Plan(name=form.name.data,
                     price=form.price.data,
-                    features=form.features.data,
-                    paystack_plan_code=form.paystack_plan_code.data)
+                    features=form.features.data)
         db.session.add(plan)
         db.session.commit()
         flash('New plan has been created.', 'success')
@@ -71,7 +70,6 @@ def edit_plan(plan_id):
         plan.name = form.name.data
         plan.price = form.price.data
         plan.features = form.features.data
-        plan.paystack_plan_code = form.paystack_plan_code.data
         db.session.commit()
         flash('The plan has been updated.', 'success')
         return redirect(url_for('admin.plans'))

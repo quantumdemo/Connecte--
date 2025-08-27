@@ -10,7 +10,7 @@ class Plan(db.Model):
     name = db.Column(db.String(50), unique=True, nullable=False)
     price = db.Column(db.Integer, nullable=False) # Price in kobo
     features = db.Column(db.Text, nullable=True)
-    paystack_plan_code = db.Column(db.String(100), unique=True, nullable=False)
+    # paystack_plan_code is removed as we are no longer using Paystack's subscription plans
 
     def __repr__(self):
         return f'<Plan {self.name}>'
@@ -71,14 +71,30 @@ class Subscription(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     plan_id = db.Column(db.Integer, db.ForeignKey('plan.id'), nullable=False)
-    paystack_subscription_code = db.Column(db.String(100), nullable=True)
+    # paystack_subscription_code is removed
     status = db.Column(db.String(20), nullable=False, default='inactive')
-    start_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    end_date = db.Column(db.DateTime, nullable=False)
+    start_date = db.Column(db.DateTime, nullable=True)
+    end_date = db.Column(db.DateTime, nullable=True)
     plan = db.relationship('Plan', backref=db.backref('subscriptions', lazy='dynamic'))
 
     def __repr__(self):
         return f'<Subscription {self.id}>'
+
+class Payment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    plan_id = db.Column(db.Integer, db.ForeignKey('plan.id'), nullable=False)
+    amount = db.Column(db.Integer, nullable=False)  # Amount in kobo
+    status = db.Column(db.String(20), nullable=False, default='pending')
+    reference = db.Column(db.String(100), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = db.relationship('User', backref=db.backref('payments', lazy='dynamic'))
+    plan = db.relationship('Plan', backref=db.backref('payments', lazy='dynamic'))
+
+    def __repr__(self):
+        return f'<Payment {self.reference}>'
 
 class Link(db.Model):
     id = db.Column(db.Integer, primary_key=True)
