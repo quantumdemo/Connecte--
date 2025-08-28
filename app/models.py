@@ -56,8 +56,10 @@ class User(UserMixin, db.Model):
 
     @property
     def active_subscription(self):
+        # A subscription is considered active for feature access if it's in 'active' or 'cancelled' state
+        # and its end date has not yet passed.
         return self.subscriptions.filter(
-            Subscription.status == 'active',
+            Subscription.status.in_(['active', 'cancelled']),
             Subscription.end_date > datetime.utcnow()
         ).order_by(Subscription.end_date.desc()).first()
 
