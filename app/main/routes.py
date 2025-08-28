@@ -1,7 +1,8 @@
 from flask import render_template
-from flask_login import login_required, current_user
+from flask_login import login_required, current_user, user_logged_in
 from app.main import bp
 from app.models import User
+from datetime import date
 
 @bp.route('/')
 @bp.route('/index')
@@ -9,8 +10,8 @@ from app.models import User
 def index():
     links_created = current_user.links.count()
     link_clicks = sum(link.clicks.count() for link in current_user.links)
-    profile_views = 0  # Placeholder for now
-    days_streak = 0    # Placeholder for now
+    profile_views = current_user.profile_views or 0
+    days_streak = current_user.login_streak or 0
     return render_template('index.html', title='Home',
                            links_created=links_created,
                            link_clicks=link_clicks,
@@ -36,6 +37,12 @@ from paystackapi.transaction import Transaction
 def public_profile(username):
     user = User.query.filter_by(username=username).first_or_404()
     links = user.links.order_by(Link.timestamp.desc()).all()
+
+    # Increment profile views if viewed by another authenticated user
+    if current_user.is_authenticated and current_user.id != user.id:
+        user.profile_views = (user.profile_views or 0) + 1
+        db.session.commit()
+
     return render_template('public_profile.html', user=user, links=links)
 
 @bp.route('/redirect/<int:link_id>')
@@ -198,6 +205,27 @@ def paystack_webhook():
             db.session.commit()
 
     return {'status': 'success'}, 200
+
+@user_logged_in.connect_via(bp)
+def on_user_logged_in(sender, user):
+    """
+    Update user's login streak.
+    """
+    today = date.today()
+
+    if user.last_login:
+        days_difference = (today - user.last_login).days
+        if days_difference == 1:
+            user.login_streak = (user.login_streak or 0) + 1
+        elif days_difference > 1:
+            user.login_streak = 1
+        # If days_difference is 0, do nothing
+    else:
+        # First login
+        user.login_streak = 1
+
+    user.last_login = today
+    db.session.commit()
 
 @bp.route('/delete_link/<int:link_id>', methods=['POST'])
 @login_required
